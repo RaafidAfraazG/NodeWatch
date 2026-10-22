@@ -64,7 +64,7 @@ jobs:
           jq -e '[.data.result[] | select(.value[1] == "1")] | length > 0' demo-artifacts/prometheus-query.json
       - name: Capture running application screenshots
         run: |
-          npm install --no-save playwright@1.52.0
+          npm install --no-save playwright@latest
           npx playwright install --with-deps chromium
           node <<'NODE'
           const { chromium } = require('playwright');
