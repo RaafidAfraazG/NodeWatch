@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/RaafidAfraazG/NodeWatch/internal/config"
 	"github.com/RaafidAfraazG/NodeWatch/internal/metrics"
 	"github.com/RaafidAfraazG/NodeWatch/internal/storage"
+	"github.com/alicebob/miniredis/v2"
 )
 
 // miniredis is an emulator; these are not real-service integration tests.
