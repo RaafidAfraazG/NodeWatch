@@ -1,0 +1,105 @@
+name: Cloud demo evidence
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  demo:
+    name: Run Compose demo and capture evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache: true
+      - name: Create disposable demo configuration
+        run: |
+          cat > .env <<'EOF'
+          MYSQL_ROOT_PASSWORD=demo-root-password
+          MYSQL_PASSWORD=demo-mysql-password
+          REDIS_PASSWORD=demo-redis-password
+          NODEWATCH_HEARTBEAT_TTL=30s
+          NODEWATCH_FRESHNESS_THRESHOLD=2m
+          NODEWATCH_ALERT_EVALUATION_INTERVAL=1s
+          NODEWATCH_ALERT_FOR=0s
+          NODEWATCH_FILESYSTEM_WARNING_PERCENT=85
+          NODEWATCH_FILESYSTEM_CRITICAL_PERCENT=95
+          NODEWATCH_IOWAIT_WARNING_PERCENT=20
+          NODEWATCH_IOWAIT_CRITICAL_PERCENT=40
+          NODEWATCH_RECONCILIATION_INTERVAL=30s
+          NODEWATCH_RECONCILIATION_BATCH_SIZE=100
+          NODEWATCH_RECONCILIATION_MAX_BATCHES=5
+          NODEWATCH_CACHE_RETRY_ATTEMPTS=3
+          EOF
+          docker compose config --quiet
+      - name: Start the real Compose stack
+        run: docker compose up --build --detach
+      - name: Wait for collector and Prometheus readiness
+        run: |
+          for i in {1..90}; do curl --fail --silent http://localhost:8080/readyz && break; sleep 2; done
+          curl --fail --silent http://localhost:8080/readyz | tee demo-readyz.json
+          for i in {1..90}; do curl --fail --silent http://localhost:9090/-/ready && break; sleep 2; done
+          curl --fail --silent http://localhost:9090/-/ready | tee prometheus-readyz.txt
+      - name: Submit explicitly simulated snapshot
+        run: go run ./cmd/demo --url http://localhost:8080/api/v1/metrics --node-id demo-simulated-host --filesystem-used-percent 96 | tee demo-generator.log
+      - name: Verify APIs, persistence, alert, metrics, and scrape
+        run: |
+          mkdir -p demo-artifacts docs/images
+          curl --fail --silent http://localhost:8080/api/v1/hosts | tee demo-artifacts/hosts.json
+          jq -e '.hosts[] | select(.id == "demo-simulated-host" and .latest.filesystems[0].used_percent == 96)' demo-artifacts/hosts.json
+          from=$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+          to=$(date -u -d '5 minutes' +%Y-%m-%dT%H:%M:%SZ)
+          curl --fail --silent -G http://localhost:8080/api/v1/hosts/demo-simulated-host/metrics --data-urlencode "from=$from" --data-urlencode "to=$to" | tee demo-artifacts/history.json
+          jq -e '.metrics | length > 0' demo-artifacts/history.json
+          for i in {1..15}; do curl --fail --silent 'http://localhost:8080/api/v1/alerts?state=firing&limit=20' > demo-artifacts/alerts.json; jq -e '.alerts[] | select(.rule == "filesystem_usage" and .host_id == "demo-simulated-host" and .state == "firing")' demo-artifacts/alerts.json && break; sleep 1; done
+          jq -e '.alerts[] | select(.rule == "filesystem_usage" and .host_id == "demo-simulated-host" and .state == "firing")' demo-artifacts/alerts.json
+          curl --fail --silent http://localhost:8080/metrics | tee demo-artifacts/metrics.prom
+          grep -q '^nodewatch_ingestions_total' demo-artifacts/metrics.prom
+          for i in {1..45}; do curl --fail --silent -G http://localhost:9090/api/v1/query --data-urlencode 'query=up{job="nodewatch-collector"}' > demo-artifacts/prometheus-query.json; jq -e '[.data.result[] | select(.value[1] == "1")] | length > 0' demo-artifacts/prometheus-query.json && break; sleep 1; done
+          jq -e '[.data.result[] | select(.value[1] == "1")] | length > 0' demo-artifacts/prometheus-query.json
+      - name: Capture running application screenshots
+        run: |
+          npm install --no-save playwright@1.52.0
+          npx playwright install --with-deps chromium
+          node <<'NODE'
+          const { chromium } = require('playwright');
+          (async () => {
+            const browser = await chromium.launch({headless:true});
+            const page = await browser.newPage({viewport:{width:1440,height:950}, deviceScaleFactor:1});
+            await page.goto('http://localhost:8080/dashboard', {waitUntil:'networkidle'});
+            await page.waitForSelector('text=demo-simulated-host');
+            await page.screenshot({path:'docs/images/demo-hosts.png', fullPage:true});
+            await page.waitForSelector('text=filesystem_usage');
+            await page.screenshot({path:'docs/images/demo-alerts.png', fullPage:true});
+            await page.goto('http://localhost:9090/targets', {waitUntil:'networkidle'});
+            await page.waitForSelector('text=nodewatch-collector');
+            await page.screenshot({path:'docs/images/demo-prometheus.png', fullPage:true});
+            await browser.close();
+          })().catch(err => { console.error(err); process.exit(1); });
+          NODE
+          file docs/images/demo-*.png
+          cp docs/images/demo-*.png demo-artifacts/
+      - name: Save evidence
+        if: always()
+        run: |
+          mkdir -p demo-artifacts
+          docker compose ps > demo-artifacts/compose-ps.txt || true
+          docker compose logs --no-color > demo-artifacts/compose.log || true
+          cp demo-generator.log demo-artifacts/ 2>/dev/null || true
+          cp demo-readyz.json prometheus-readyz.txt demo-artifacts/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nodewatch-cloud-demo-evidence
+          path: |
+            demo-artifacts/
+            docs/images/demo-*.png
+          if-no-files-found: warn
+      - name: Stop disposable stack
+        if: always()
+        run: docker compose down --volumes --remove-orphans

@@ -361,3 +361,11 @@ func TestPrometheusMetricsEndpoint(t *testing.T) {
 		t.Fatalf("metrics endpoint: %d %s", w.Code, w.Body)
 	}
 }
+
+func TestDashboard(t *testing.T) {
+	h, _, _ := setup(t)
+	w := request(h, "GET", "/dashboard", "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Real-time infrastructure monitoring") || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") {
+		t.Fatalf("dashboard: %d %q", w.Code, w.Header().Get("Content-Type"))
+	}
+}

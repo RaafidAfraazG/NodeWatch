@@ -59,6 +59,7 @@ func New(c config.Collector, h storage.History, cache storage.Cache, logger *slo
 	register("/api/v1/hosts/{id}/metrics", "GET", a.historyQuery)
 	register("/api/v1/alerts", "GET", a.alertList)
 	register("/api/v1/alerts/{id}", "GET", a.alert)
+	register("/dashboard", "GET", a.dashboard)
 	metricsHandler := promhttp.HandlerFor(collectorMetrics.Registry, promhttp.HandlerOpts{EnableOpenMetrics: true})
 	mux.Handle("/metrics", metricsHandler)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { fail(w, 404, "not_found", "route not found") })
@@ -83,7 +84,7 @@ func New(c config.Collector, h storage.History, cache storage.Cache, logger *slo
 
 func routeName(path string) string {
 	switch {
-	case path == "/healthz", path == "/readyz", path == "/api/v1/metrics", path == "/api/v1/hosts", path == "/api/v1/alerts":
+	case path == "/healthz", path == "/readyz", path == "/dashboard", path == "/api/v1/metrics", path == "/api/v1/hosts", path == "/api/v1/alerts":
 		return path
 	case strings.HasPrefix(path, "/api/v1/hosts/") && strings.HasSuffix(path, "/metrics"):
 		return "/api/v1/hosts/{id}/metrics"

@@ -103,7 +103,14 @@ func TestIntegrationCollectorIngestionAndOfflineAlert(t *testing.T) {
 	engine.Evaluate(time.Now().UTC(), hosts)
 	engine.Evaluate(time.Now().UTC(), hosts)
 	items, err := engine.List("firing", 10)
-	if err != nil || len(items) == 0 || items[0].Rule != "host_offline" {
+	foundOffline := false
+	for _, item := range items {
+		if item.Rule == "host_offline" && item.HostID == id {
+			foundOffline = true
+			break
+		}
+	}
+	if err != nil || !foundOffline {
 		t.Fatalf("offline alert missing: %#v, %v", items, err)
 	}
 }
