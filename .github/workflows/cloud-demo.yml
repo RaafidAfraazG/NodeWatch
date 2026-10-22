@@ -76,8 +76,8 @@ jobs:
             await page.screenshot({path:'docs/images/demo-hosts.png', fullPage:true});
             await page.waitForSelector('text=filesystem_usage');
             await page.screenshot({path:'docs/images/demo-alerts.png', fullPage:true});
-            await page.goto('http://localhost:9090/targets', {waitUntil:'networkidle'});
-            await page.waitForSelector('text=nodewatch-collector');
+            await page.goto('http://localhost:9090/targets?search=nodewatch-collector', {waitUntil:'networkidle'});
+            if (!(await page.locator('body').innerText()).includes('nodewatch-collector')) throw new Error('Prometheus target is not rendered');
             await page.screenshot({path:'docs/images/demo-prometheus.png', fullPage:true});
             await browser.close();
           })().catch(err => { console.error(err); process.exit(1); });
