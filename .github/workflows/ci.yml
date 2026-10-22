@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache: true
+      - name: Check formatting
+        run: test -z "$(gofmt -l cmd internal)"
+      - name: Vet
+        run: go vet ./...
+      - name: Unit tests
+        run: go test -timeout 60s ./...
+      - name: Linux amd64 builds
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: |
+          go build -trimpath -o bin/agent-linux-amd64 ./cmd/agent
+          go build -trimpath -o bin/collector-linux-amd64 ./cmd/collector
+      - name: Validate Compose configuration
+        env:
+          MYSQL_ROOT_PASSWORD: ci-root-password
+          MYSQL_PASSWORD: ci-mysql-password
+          REDIS_PASSWORD: ci-redis-password
+        run: docker compose config --quiet
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: nodewatch_test
+          MYSQL_USER: nodewatch
+          MYSQL_PASSWORD: ci-mysql-password
+          MYSQL_ROOT_PASSWORD: ci-root-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="MYSQL_PWD=ci-mysql-password mysqladmin ping -h 127.0.0.1 -u nodewatch"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping" --health-interval=5s --health-timeout=3s --health-retries=20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache: true
+      - name: Real storage integration tests
+        env:
+          NODEWATCH_INTEGRATION_MYSQL_ADDR: 127.0.0.1:3306
+          NODEWATCH_MYSQL_DATABASE: nodewatch_test
+          NODEWATCH_MYSQL_USER: nodewatch
+          NODEWATCH_MYSQL_PASSWORD: ci-mysql-password
+          NODEWATCH_INTEGRATION_REDIS_ADDR: 127.0.0.1:6379
+        run: go test -tags=integration -count=1 -timeout 60s ./internal/storage/... ./internal/collector

@@ -1,0 +1,88 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: nodewatch
+      MYSQL_USER: nodewatch
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql -h 127.0.0.1 -u nodewatch -D nodewatch -e 'SELECT 1' >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    restart: unless-stopped
+  redis:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+  collector:
+    build: .
+    environment:
+      NODEWATCH_BIND: :8080
+      NODEWATCH_MYSQL_ADDR: mysql:3306
+      NODEWATCH_MYSQL_USER: nodewatch
+      NODEWATCH_MYSQL_DATABASE: nodewatch
+      NODEWATCH_MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      NODEWATCH_REDIS_ADDR: redis:6379
+      NODEWATCH_REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+      NODEWATCH_HEARTBEAT_TTL: ${NODEWATCH_HEARTBEAT_TTL:-30s}
+      NODEWATCH_FRESHNESS_THRESHOLD: ${NODEWATCH_FRESHNESS_THRESHOLD:-2m}
+      NODEWATCH_ALERT_EVALUATION_INTERVAL: ${NODEWATCH_ALERT_EVALUATION_INTERVAL:-10s}
+      NODEWATCH_ALERT_FOR: ${NODEWATCH_ALERT_FOR:-30s}
+      NODEWATCH_FILESYSTEM_WARNING_PERCENT: ${NODEWATCH_FILESYSTEM_WARNING_PERCENT:-85}
+      NODEWATCH_FILESYSTEM_CRITICAL_PERCENT: ${NODEWATCH_FILESYSTEM_CRITICAL_PERCENT:-95}
+      NODEWATCH_IOWAIT_WARNING_PERCENT: ${NODEWATCH_IOWAIT_WARNING_PERCENT:-20}
+      NODEWATCH_IOWAIT_CRITICAL_PERCENT: ${NODEWATCH_IOWAIT_CRITICAL_PERCENT:-40}
+      NODEWATCH_RECONCILIATION_INTERVAL: ${NODEWATCH_RECONCILIATION_INTERVAL:-30s}
+      NODEWATCH_RECONCILIATION_BATCH_SIZE: ${NODEWATCH_RECONCILIATION_BATCH_SIZE:-100}
+      NODEWATCH_RECONCILIATION_MAX_BATCHES: ${NODEWATCH_RECONCILIATION_MAX_BATCHES:-5}
+      NODEWATCH_CACHE_RETRY_ATTEMPTS: ${NODEWATCH_CACHE_RETRY_ATTEMPTS:-3}
+      NODEWATCH_AUTO_MIGRATE: "true"
+    ports:
+      - "127.0.0.1:8080:8080"
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    stop_grace_period: 20s
+    restart: unless-stopped
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      collector:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  mysql-data:
+  redis-data:
+  prometheus-data:

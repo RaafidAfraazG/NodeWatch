@@ -1,0 +1,42 @@
+# Isolated, disposable real-service test environment. No production volumes.
+services:
+  mysql-test:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: nodewatch_test
+      MYSQL_USER: nodewatch
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql -h 127.0.0.1 -u nodewatch -D nodewatch_test -e 'SELECT 1' >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+  redis-test:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\""]
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  tests:
+    build:
+      context: .
+      target: build
+    command: ["go", "test", "-tags=integration", "-count=1", "-v", "-timeout", "60s", "./internal/storage/...", "./internal/collector"]
+    environment:
+      NODEWATCH_INTEGRATION_MYSQL_ADDR: mysql-test:3306
+      NODEWATCH_MYSQL_DATABASE: nodewatch_test
+      NODEWATCH_MYSQL_USER: nodewatch
+      NODEWATCH_MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      NODEWATCH_INTEGRATION_REDIS_ADDR: redis-test:6379
+      NODEWATCH_REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    depends_on:
+      mysql-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
