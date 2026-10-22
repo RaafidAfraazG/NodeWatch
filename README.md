@@ -1,96 +1,61 @@
 # NodeWatch
 
-A lightweight Go monitoring stack for Linux hosts. NodeWatch collects `/proc` and filesystem metrics, stores durable history in MySQL, tracks live state in Redis, evaluates alerts, and exposes Prometheus metrics.
+**Real-time Linux infrastructure monitoring built with Go.**
 
-> **Status:** Feature-complete implementation with local unit/build verification. Docker, live MySQL/Redis, Prometheus scraping, and runtime screenshots still need verification on a Docker-capable host.
+NodeWatch pairs a lightweight Linux agent with a Go collector that records durable history in MySQL, maintains live state in Redis, evaluates alerts, and exposes Prometheus metrics. It demonstrates strict ingestion, idempotent storage, health checks, reconciliation, and a reproducible cloud demo.
+
+## Running demo
+
+These screenshots were captured by the GitHub-hosted Cloud demo workflow. They show an explicitly **simulated** host snapshot.
+
+| Live host view | Firing alert | Prometheus scrape |
+| --- | --- | --- |
+| ![NodeWatch simulated host](docs/images/demo-hosts.png) | ![NodeWatch firing filesystem alert](docs/images/demo-alerts.png) | ![Prometheus target up](docs/images/demo-prometheus.png) |
+
+## Highlights
+
+- Collects Linux CPU, I/O wait, memory, load, filesystem, and disk metrics from `/proc`.
+- Persists idempotent snapshot history in MySQL and live heartbeat state in Redis.
+- Tracks `online`, `stale`, `offline`, and `unknown` host state.
+- Evaluates filesystem, CPU I/O-wait, and offline-host alert lifecycles.
+- Provides REST, health/readiness, Prometheus, and a lightweight read-only dashboard endpoints.
+- Includes hardened Docker Compose plus separate unit, service-container integration, and cloud-demo workflows.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    A[Linux agent] -->|JSON snapshots| C[Collector API]
+    A[Linux agent] -->|versioned snapshots| C[Go collector]
     C -->|durable history| M[(MySQL)]
     C -->|latest state + heartbeat| R[(Redis)]
     C --> E[Alert engine]
     P[Prometheus] -->|scrapes /metrics| C
+    D[Read-only dashboard] -->|REST API| C
 ```
 
-The diagram above documents the implemented data flow. Runtime screenshots will be added only after a real Compose demo run.
+MySQL is the source of truth for history. Redis supplies fast latest-state reads; a reconciliation worker repairs it after transient cache failures. The collector commits MySQL before Redis, so identical snapshots can be retried safely.
 
-## What it does
+## Technology stack
 
-| Capability | Status |
+| Area | Choice |
 | --- | --- |
-| Linux CPU, I/O wait, memory, load, filesystem, and disk metrics | Implemented |
-| MySQL snapshot history and idempotent writes | Implemented |
-| Redis latest state, heartbeat TTL, and cache reconciliation | Implemented |
-| Host freshness: online, stale, offline, unknown | Implemented |
-| Filesystem, I/O-wait, and offline-host alerts | Implemented |
-| Prometheus `/metrics` endpoint | Implemented |
-| GitHub Actions unit and service-container integration jobs | Configured |
-| Docker Compose demo, live scrape, and screenshots | Not verified in this environment |
-| Authentication, TLS, durable notifications, retention jobs | Not implemented |
+| Services | Go 1.22, `net/http`, Prometheus client |
+| Durable data | MySQL 8.4 |
+| Live state | Redis 7.4 |
+| Orchestration | Docker Compose |
+| Verification | Go tests, GitHub Actions, Playwright/Chromium |
 
-## Quick start
+## Agent, collector, and alerts
 
-Create an ignored `.env` from `.env.example` and replace the password placeholders.
+The Linux agent reads `/proc` and filesystems, then posts snapshots to `POST /api/v1/metrics`. The collector validates each payload, stores history, refreshes a heartbeat, and serves the host view. Alerts transition through `pending`, `firing`, and `resolved`.
 
-```sh
-docker compose up --build -d
-curl http://localhost:8080/readyz
-curl http://localhost:9090/-/ready
-```
+- `filesystem_usage`: warning at 85%, critical at 95%
+- `cpu_iowait`: warning at 20%, critical at 40%
+- `host_offline`: Redis heartbeat has expired
 
-The collector is published only on `127.0.0.1:8080`; Prometheus is on `127.0.0.1:9090`. MySQL and Redis stay inside the Compose network.
+## Prometheus
 
-Run the Linux agent separately:
-
-```sh
-NODEWATCH_NODE_ID=demo-linux \
-NODEWATCH_COLLECTOR_URL=http://localhost:8080/api/v1/metrics \
-go run ./cmd/agent
-```
-
-## Safe demo
-
-The demo generator submits **simulated** data. It does not inspect or change disk pressure.
-
-```sh
-go run ./cmd/demo --url http://localhost:8080/api/v1/metrics
-curl http://localhost:8080/api/v1/hosts/demo-simulated-host
-curl 'http://localhost:8080/api/v1/alerts?state=firing&limit=20'
-curl http://localhost:8080/metrics
-```
-
-For the full sequence, including a controlled filesystem alert, see [docs/DEMO.md](docs/DEMO.md).
-
-## API
-
-| Endpoint | Purpose |
-| --- | --- |
-| `POST /api/v1/metrics` | Ingest a v1 agent snapshot |
-| `GET /api/v1/hosts` | List known hosts and current state |
-| `GET /api/v1/hosts/{id}` | Get one host |
-| `GET /api/v1/hosts/{id}/metrics` | Query bounded historical snapshots |
-| `GET /api/v1/alerts` | List pending, firing, or resolved alerts |
-| `GET /metrics` | Prometheus/OpenMetrics exposition |
-| `GET /healthz` / `GET /readyz` | Liveness / dependency readiness |
-
-An ingestion response looks like:
-
-```json
-{"status":"accepted","node_id":"demo-linux","collected_at":"2026-10-22T12:00:00Z"}
-```
-
-## Alerts and observability
-
-Alerts transition through `pending` → `firing` → `resolved`. Supported rules are:
-
-- `host_offline` — Redis heartbeat expired
-- `filesystem_usage` — configured warning/critical threshold
-- `cpu_iowait` — configured warning/critical threshold
-
-Prometheus exports bounded-cardinality request, ingestion, storage, host, and alert metrics, plus Go and process metrics. It never labels metrics with host IDs, raw paths, credentials, or arbitrary error text.
+Prometheus scrapes `/metrics` across the internal Compose network.
 
 ```promql
 sum(rate(nodewatch_http_requests_total[5m])) by (route, status)
@@ -98,14 +63,61 @@ sum(rate(nodewatch_ingestions_total[5m])) by (outcome)
 nodewatch_active_alerts{state="firing"}
 ```
 
-## Design notes
+## API
 
-- **MySQL is authoritative** for host history.
-- **Redis is derived state** for the latest snapshot and heartbeat.
-- The collector commits MySQL before Redis. If Redis fails after a MySQL commit, clients retry the identical snapshot and the reconciliation worker repairs stale cache entries.
-- This is **not** a distributed transaction; reads across the two stores are eventually consistent.
+| Endpoint | Description |
+| --- | --- |
+| `POST /api/v1/metrics` | Ingest an agent snapshot |
+| `GET /api/v1/hosts` | List hosts and live status |
+| `GET /api/v1/hosts/{id}` | Get latest host snapshot |
+| `GET /api/v1/hosts/{id}/metrics` | Query historical snapshots |
+| `GET /api/v1/alerts` | List alerts |
+| `GET /dashboard` | Lightweight live monitoring view |
+| `GET /healthz`, `GET /readyz` | Liveness and readiness |
 
-## Development
+```sh
+curl http://localhost:8080/api/v1/hosts
+curl 'http://localhost:8080/api/v1/alerts?state=firing&limit=20'
+```
+
+## Quick start
+
+```sh
+cp .env.example .env
+# Replace all password placeholders in .env.
+docker compose config --quiet
+docker compose up --build -d
+until curl --fail --silent http://localhost:8080/readyz; do sleep 1; done
+until curl --fail --silent http://localhost:9090/-/ready; do sleep 1; done
+```
+
+The collector is at `http://localhost:8080`, the dashboard at `http://localhost:8080/dashboard`, and Prometheus at `http://localhost:9090`. MySQL and Redis have no public ports.
+
+Run the Linux agent from a Linux host that can reach the collector:
+
+```sh
+NODEWATCH_NODE_ID=linux-01 \
+NODEWATCH_COLLECTOR_URL=http://localhost:8080/api/v1/metrics \
+go run ./cmd/agent
+```
+
+## Simulated demo
+
+Set `NODEWATCH_ALERT_EVALUATION_INTERVAL=1s` and `NODEWATCH_ALERT_FOR=0s` in `.env`, then run:
+
+```sh
+go run ./cmd/demo --url http://localhost:8080/api/v1/metrics \
+  --node-id demo-simulated-host --filesystem-used-percent 96
+sleep 3
+curl http://localhost:8080/api/v1/hosts/demo-simulated-host
+curl 'http://localhost:8080/api/v1/alerts?state=firing&limit=20'
+curl -G http://localhost:9090/api/v1/query --data-urlencode 'query=up{job="nodewatch-collector"}'
+docker compose down
+```
+
+The demo generator submits simulated metrics only. See [docs/DEMO.md](docs/DEMO.md) for a fuller walkthrough.
+
+## Development and testing
 
 ```sh
 go test -timeout 60s ./...
@@ -115,27 +127,23 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/agent
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/collector
 ```
 
-`make test-integration` runs real-service tests when the required MySQL and Redis environment variables are configured. GitHub Actions runs portable checks and a separate disposable MySQL/Redis job.
+GitHub Actions runs portable checks and a separate disposable MySQL/Redis integration job. [Cloud demo evidence](.github/workflows/cloud-demo.yml) runs Compose, verifies persistence, alerting, `/metrics`, and Prometheus scraping, then uploads screenshots and logs.
 
-## Project layout
+## Repository layout
 
 ```text
-cmd/agent/          Linux metrics agent
-cmd/collector/      HTTP collector and lifecycle wiring
-cmd/demo/           Simulated snapshot generator
-internal/alerts/    Alert lifecycle and rules
-internal/collector/ HTTP API and validation
-internal/metrics/   Linux collection and parsers
-internal/recovery/  Redis cache repair
+cmd/agent/          Linux agent
+cmd/collector/      Collector process and lifecycle wiring
+cmd/demo/           Explicitly simulated snapshot generator
+internal/alerts/    Alert rules and lifecycle
+internal/collector/ HTTP API and dashboard
 internal/storage/   MySQL and Redis adapters
 deploy/prometheus/  Prometheus scrape configuration
-docs/               Demo and testing guides
+docs/               Demo and testing documentation
 ```
 
-## Security and limitations
+## Security and license
 
-NodeWatch does not implement authentication or TLS termination. Keep it on a trusted network or place it behind an authenticated HTTPS reverse proxy. It has no durable agent queue, notification delivery, data retention job, or Grafana dashboard.
+The Compose collector and Prometheus ports are loopback-only; MySQL and Redis remain internal. NodeWatch does not provide authentication or TLS termination, so place it behind an authenticated HTTPS reverse proxy for untrusted networks. Secrets belong in the ignored `.env` file.
 
-Read [ARCHITECTURE.md](ARCHITECTURE.md), [docs/TESTING.md](docs/TESTING.md), and [CONTRIBUTING.md](CONTRIBUTING.md) for engineering detail.
-
-Licensed under [MIT](LICENSE).
+Licensed under [MIT](LICENSE). See [CONTRIBUTING.md](CONTRIBUTING.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
