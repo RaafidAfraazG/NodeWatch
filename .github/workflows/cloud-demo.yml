@@ -53,7 +53,7 @@ jobs:
           curl --fail --silent http://localhost:8080/api/v1/hosts | tee demo-artifacts/hosts.json
           jq -e '.hosts[] | select(.id == "demo-simulated-host" and .latest.filesystems[0].used_percent == 96)' demo-artifacts/hosts.json
           from=$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
-          to=$(date -u -d '5 minutes' +%Y-%m-%dT%H:%M:%SZ)
+          to=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           curl --fail --silent -G http://localhost:8080/api/v1/hosts/demo-simulated-host/metrics --data-urlencode "from=$from" --data-urlencode "to=$to" | tee demo-artifacts/history.json
           jq -e '.metrics | length > 0' demo-artifacts/history.json
           for i in {1..15}; do curl --fail --silent 'http://localhost:8080/api/v1/alerts?state=firing&limit=20' > demo-artifacts/alerts.json; jq -e '.alerts[] | select(.rule == "filesystem_usage" and .host_id == "demo-simulated-host" and .state == "firing")' demo-artifacts/alerts.json && break; sleep 1; done
